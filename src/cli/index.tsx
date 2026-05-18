@@ -160,13 +160,15 @@ async function runDashboard(): Promise<void> {
     await promptAddServer(vault);
   }
   const { App } = await import('../tui/App.js');
-  render(<App vault={vault} />);
+  const app = render(<App vault={vault} />);
+  await app.waitUntilExit();
 }
 
 async function runFiles(name: string): Promise<void> {
   const { FileManager } = await import('../tui/screens/FileManager.js');
   const { vault, server } = await loadServer(name);
-  render(<FileManager server={server} vault={vault} onBack={() => undefined} />);
+  const app = render(<FileManager server={server} vault={vault} onBack={() => undefined} />);
+  await app.waitUntilExit();
 }
 
 async function runUpload(name: string, localPath: string, remotePath: string): Promise<void> {
@@ -216,7 +218,7 @@ async function main(): Promise<void> {
   program
     .name('sshp')
     .description('Portable encrypted SSH/SFTP picker')
-    .version('0.1.1')
+    .version('0.1.2')
     .action(runDashboard);
 
   program.command('init').description('Create a portable encrypted vault').action(runInit);
