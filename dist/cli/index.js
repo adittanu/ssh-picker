@@ -151,12 +151,24 @@ async function runDashboard() {
         await promptAddServer(vault);
     }
     const { App } = await import('../tui/App.js');
+    // Reset stdin so Ink can take over raw mode after @inquirer/prompts
+    if (process.stdin.isTTY) {
+        process.stdin.setRawMode(false);
+        process.stdin.pause();
+        process.stdin.removeAllListeners();
+    }
     const app = render(_jsx(App, { vault: vault }));
     await app.waitUntilExit();
 }
 async function runFiles(name) {
     const { FileManager } = await import('../tui/screens/FileManager.js');
     const { vault, server } = await loadServer(name);
+    // Reset stdin so Ink can take over raw mode after @inquirer/prompts
+    if (process.stdin.isTTY) {
+        process.stdin.setRawMode(false);
+        process.stdin.pause();
+        process.stdin.removeAllListeners();
+    }
     const app = render(_jsx(FileManager, { server: server, vault: vault, onBack: () => undefined }));
     await app.waitUntilExit();
 }
@@ -204,7 +216,7 @@ async function main() {
     program
         .name('sshp')
         .description('Portable encrypted SSH/SFTP picker')
-        .version('0.1.2')
+        .version('0.1.3')
         .action(runDashboard);
     program.command('init').description('Create a portable encrypted vault').action(runInit);
     program.command('add').description('Add a password-based SSH server').action(runAdd);
