@@ -3,6 +3,13 @@ export interface SftpConnectionOptions {
     server: ServerRecord;
     credentials: ServerCredentials;
 }
+export interface TransferProgress {
+    action: 'upload' | 'download';
+    path: string;
+    bytesTransferred: number;
+    totalBytes?: number;
+}
+export type TransferProgressHandler = (progress: TransferProgress) => void;
 export declare function listLocalDirectory(path: string): DirectoryEntry[];
 export declare class SftpClient {
     private conn?;
@@ -10,11 +17,12 @@ export declare class SftpClient {
     connect({ server, credentials }: SftpConnectionOptions): Promise<void>;
     close(): void;
     listRemoteDirectory(path: string): Promise<DirectoryEntry[]>;
-    uploadFile(localPath: string, remotePath: string, overwrite?: boolean): Promise<void>;
-    downloadFile(remotePath: string, localPath: string, overwrite?: boolean): Promise<void>;
-    uploadRecursive(localPath: string, remotePath: string, overwrite?: boolean): Promise<void>;
-    downloadRecursive(remotePath: string, localPath: string, overwrite?: boolean): Promise<void>;
+    uploadFile(localPath: string, remotePath: string, overwrite?: boolean, onProgress?: TransferProgressHandler): Promise<void>;
+    downloadFile(remotePath: string, localPath: string, overwrite?: boolean, onProgress?: TransferProgressHandler): Promise<void>;
+    uploadRecursive(localPath: string, remotePath: string, overwrite?: boolean, onProgress?: TransferProgressHandler): Promise<void>;
+    downloadRecursive(remotePath: string, localPath: string, overwrite?: boolean, onProgress?: TransferProgressHandler): Promise<void>;
     private remoteExists;
+    private statRemote;
     private mkdirRemote;
     private requireSftp;
 }

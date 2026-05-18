@@ -4,3 +4,6 @@ export interface SshConnectionOptions {
     credentials: ServerCredentials;
 }
 export declare function connectSsh({ server, credentials }: SshConnectionOptions): Promise<void>;
+export declare function testSshConnection({ server, credentials }: SshConnectionOptions): Promise<{
+    elapsedMs: number;
+}>;
