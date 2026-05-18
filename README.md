@@ -36,8 +36,25 @@ Dashboard keys:
 
 - `Enter` connect to the selected server over SSH
 - `F` open SFTP file manager
+- `T` test SSH connection without opening a shell
+- `A` add a new server
+- `E` edit the selected server
+- `Delete` or `Backspace` delete the selected server after confirmation
 - `/` search servers
 - `Q` or `Esc` quit
+
+File manager keys:
+
+- `Tab` switch local/remote pane
+- `Enter` open selected folder
+- `Backspace` or `Left` go to parent folder
+- `/` search files in the active pane
+- `U` upload selected local file/folder
+- `D` download selected remote file/folder
+- `R` refresh both panes
+- `Q` or `Esc` go back or quit when launched with `sshp files`
+
+Transfers show a live progress bar for the active file and keep the panes usable for confirming where files are moving.
 
 ## Scriptable commands
 
@@ -49,6 +66,8 @@ sshp upload <server> <local> <remote>
 sshp download <server> <remote> <local>
 sshp export backup.sshp
 sshp import backup.sshp
+sshp import-ssh-config [file]
+sshp import-termius hosts.csv
 sshp config set dataDir <path>
 ```
 
@@ -57,7 +76,13 @@ sshp config set dataDir <path>
 - The master password is never stored.
 - Credentials are encrypted with AES-256-GCM.
 - The vault key is derived with Node's `scrypt` implementation.
-- Export files contain the already-encrypted SQLite vault and still require the master password.
+- Export files encrypt the SQLite vault backup and require the master password to import.
+- Server metadata in the local SQLite database is not encrypted; protect access to your data directory.
+
+## Imports
+
+- `sshp import-ssh-config` imports hosts from `~/.ssh/config`, including readable `IdentityFile` private keys.
+- `sshp import-termius hosts.csv` imports host rows from a Termius-style CSV. Full Termius encrypted vault export is not publicly documented, so CSV import is the supported path.
 
 ## Development
 
