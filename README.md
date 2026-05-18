@@ -24,6 +24,56 @@ npm install -g .
 
 The package builds automatically during install and exposes a global `sshp` command.
 
+## Screenshots
+
+### Dashboard
+
+```
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ SSHP  Vault unlocked  3 servers                    / search   A add server │
+│                                                                             │
+│ ┌───────────────────────┐                                                   │
+│ │ Servers      1-3/3    │  Server Details                                   │
+│ │                       │                                                   │
+│ │ > production-web      │  Name:     production-web                         │
+│ │   staging-api         │  Host:     10.0.1.50                              │
+│ │   dev-local           │  User:     ubuntu                                 │
+│ │                       │  Port:     22                                     │
+│ │                       │  Auth:     private_key                            │
+│ │                       │  Remote:   /home/ubuntu                           │
+│ │                       │  Last:     5/17/2026, 3:42 PM                     │
+│ │                       │                                                   │
+│ │                       │  Enter connect  F files  T test  E edit  Del rm   │
+│ └───────────────────────┘                                                   │
+│                                                                             │
+│ Up/Down select  / search  Q quit                                            │
+│ Status: Ready                                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### File Manager
+
+```
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ ┌─── Local (active) ────────────┐  ┌─── Remote ──────────────────────────┐  │
+│ │ C:/Users/dev     1-8/12       │  │ /home/ubuntu     1-6/6              │  │
+│ │                               │  │                                     │  │
+│ │ › Documents/                  │  │   .ssh/                             │  │
+│ │   Downloads/                  │  │   logs/                             │  │
+│ │   Projects/                   │  │   app/                              │  │
+│ │   config.json                 │  │   .bashrc                           │  │
+│ │   notes.txt                   │  │   .profile                          │  │
+│ │   deploy.sh                   │  │   README.md                         │  │
+│ │                               │  │                                     │  │
+│ └───────────────────────────────┘  └─────────────────────────────────────┘  │
+│                                                                             │
+│ Uploading: deploy.sh                                                        │
+│ [########----------------] 33%  1.2 KB / 3.6 KB                             │
+│                                                                             │
+│ Enter open  U upload  / search local  Backspace/Left up  Tab remote  Q back │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ## Quick start
 
 ```bash
