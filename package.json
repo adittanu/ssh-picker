@@ -1,0 +1,48 @@
+{
+  "name": "ssh-picker",
+  "version": "0.1.0",
+  "description": "SSHP - a portable encrypted SSH/SFTP picker for the terminal.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adittanu/ssh-picker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/adittanu/ssh-picker/issues"
+  },
+  "homepage": "https://github.com/adittanu/ssh-picker#readme",
+  "bin": {
+    "sshp": "./dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli/index.tsx",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build",
+    "prepack": "npm run build"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^7.10.1",
+    "commander": "^14.0.2",
+    "ink": "^6.5.1",
+    "react": "^19.2.3",
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/ssh2": "^1.15.5",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
+  }
+}
