@@ -3,43 +3,65 @@ import React from 'react';
 import { Command } from 'commander';
 import { render } from 'ink';
 import { input, password, confirm } from '@inquirer/prompts';
-import { statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
-import { writeBootstrapConfig } from '../config/paths.js';
+import { resolveDataDir, resolveDbPath, writeBootstrapConfig } from '../config/paths.js';
 import { toFriendlyMessage } from '../shared/errors.js';
 import type { ServerRecord, VaultContext } from '../shared/types.js';
+
+const originalEmitWarning = process.emitWarning.bind(process);
+process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
+  const message = typeof warning === 'string' ? warning : warning.message;
+  const type = typeof args[0] === 'string' ? args[0] : warning instanceof Error ? warning.name : undefined;
+  if (type === 'ExperimentalWarning' && message.includes('SQLite')) return;
+  return (originalEmitWarning as (...emitArgs: unknown[]) => void)(warning, ...args);
+}) as typeof process.emitWarning;
 
 async function askMasterPassword(message = 'Master password'): Promise<string> {
   return password({ message, mask: '*' });
 }
 
-async function unlockFromPrompt(): Promise<VaultContext> {
-  const { unlockVault } = await import('../vault/vault.js');
-  return unlockVault(await askMasterPassword());
-}
-
-async function runInit(): Promise<void> {
-  const { initVault } = await import('../vault/vault.js');
+async function createVaultFromPrompt(dataDir = resolveDataDir()): Promise<VaultContext> {
   const first = await askMasterPassword('Create master password');
   const second = await askMasterPassword('Confirm master password');
   if (first !== second) throw new Error('Master passwords do not match.');
-  const vault = initVault(first);
+  const { initVault } = await import('../vault/vault.js');
+  const vault = initVault(first, dataDir);
   console.log(`Initialized SSHP vault at ${vault.dataDir}`);
+  return vault;
 }
 
-async function runAdd(): Promise<void> {
-  const [{ openMigratedDatabase }, { ServerRepository }, { encryptString }] = await Promise.all([
-    import('../db/connection.js'),
-    import('../db/repositories/serverRepository.js'),
-    import('../vault/crypto.js')
-  ]);
-  const vault = await unlockFromPrompt();
+async function unlockFromPrompt(): Promise<VaultContext> {
+  const masterPassword = await askMasterPassword();
+  const { unlockVault } = await import('../vault/vault.js');
+  return unlockVault(masterPassword);
+}
+
+async function unlockOrInitializeVault(): Promise<VaultContext> {
+  const dataDir = resolveDataDir();
+  if (!existsSync(resolveDbPath(dataDir))) {
+    console.log('No SSHP vault found. Let\'s create one.');
+    return createVaultFromPrompt(dataDir);
+  }
+  return unlockFromPrompt();
+}
+
+async function runInit(): Promise<void> {
+  await createVaultFromPrompt();
+}
+
+async function promptAddServer(vault: VaultContext): Promise<ServerRecord> {
   const name = await input({ message: 'Name' });
   const host = await input({ message: 'Host' });
   const username = await input({ message: 'Username' });
   const portText = await input({ message: 'Port', default: '22' });
   const serverPassword = await password({ message: 'SSH password', mask: '*' });
   const defaultRemotePath = await input({ message: 'Default remote path', default: '/home/' + username });
+  const [{ openMigratedDatabase }, { ServerRepository }, { encryptString }] = await Promise.all([
+    import('../db/connection.js'),
+    import('../db/repositories/serverRepository.js'),
+    import('../vault/crypto.js')
+  ]);
   const db = openMigratedDatabase(vault.dbPath);
   try {
     const server = new ServerRepository(db).create({
@@ -52,38 +74,48 @@ async function runAdd(): Promise<void> {
       defaultRemotePath
     });
     console.log(`Added ${server.name} (${server.username}@${server.host}:${server.port})`);
+    return server;
+  } finally {
+    db.close();
+  }
+}
+
+async function runAdd(): Promise<void> {
+  const vault = await unlockOrInitializeVault();
+  await promptAddServer(vault);
+}
+
+async function listServers(vault: VaultContext): Promise<ServerRecord[]> {
+  const [{ openMigratedDatabase }, { ServerRepository }] = await Promise.all([
+    import('../db/connection.js'),
+    import('../db/repositories/serverRepository.js')
+  ]);
+  const db = openMigratedDatabase(vault.dbPath);
+  try {
+    return new ServerRepository(db).list();
   } finally {
     db.close();
   }
 }
 
 async function runList(): Promise<void> {
-  const [{ openMigratedDatabase }, { ServerRepository }] = await Promise.all([
-    import('../db/connection.js'),
-    import('../db/repositories/serverRepository.js')
-  ]);
   const vault = await unlockFromPrompt();
-  const db = openMigratedDatabase(vault.dbPath);
-  try {
-    const servers = new ServerRepository(db).list();
-    if (servers.length === 0) {
-      console.log('No servers. Run `sshp add`.');
-      return;
-    }
-    for (const server of servers) {
-      console.log(`${server.name}\t${server.username}@${server.host}:${server.port}\t${server.connectionCount} connections`);
-    }
-  } finally {
-    db.close();
+  const servers = await listServers(vault);
+  if (servers.length === 0) {
+    console.log('No servers. Run `sshp add`.');
+    return;
+  }
+  for (const server of servers) {
+    console.log(`${server.name}\t${server.username}@${server.host}:${server.port}\t${server.connectionCount} connections`);
   }
 }
 
 async function loadServer(name: string): Promise<{ vault: VaultContext; server: ServerRecord }> {
+  const vault = await unlockFromPrompt();
   const [{ openMigratedDatabase }, { ServerRepository }] = await Promise.all([
     import('../db/connection.js'),
     import('../db/repositories/serverRepository.js')
   ]);
-  const vault = await unlockFromPrompt();
   const db = openMigratedDatabase(vault.dbPath);
   try {
     const repo = new ServerRepository(db);
@@ -117,8 +149,17 @@ async function runConnect(name: string): Promise<void> {
 }
 
 async function runDashboard(): Promise<void> {
+  const vault = await unlockOrInitializeVault();
+  const servers = await listServers(vault);
+  if (servers.length === 0) {
+    const addFirstServer = await confirm({ message: 'No servers yet. Add your first server now?', default: true });
+    if (!addFirstServer) {
+      console.log('No servers saved. Run `sshp add` when you are ready.');
+      return;
+    }
+    await promptAddServer(vault);
+  }
   const { App } = await import('../tui/App.js');
-  const vault = await unlockFromPrompt();
   render(<App vault={vault} />);
 }
 
@@ -175,7 +216,7 @@ async function main(): Promise<void> {
   program
     .name('sshp')
     .description('Portable encrypted SSH/SFTP picker')
-    .version('0.1.0')
+    .version('0.1.1')
     .action(runDashboard);
 
   program.command('init').description('Create a portable encrypted vault').action(runInit);

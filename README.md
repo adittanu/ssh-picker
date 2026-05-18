@@ -27,8 +27,8 @@ The package builds automatically during install and exposes a global `sshp` comm
 ## Quick start
 
 ```bash
-sshp init        # create ~/.sshp/sshp.db encrypted with a master password
-sshp add         # add a password-based SSH server
+sshp             # first run creates ~/.sshp/sshp.db, then offers to add a server
+sshp add         # add another password-based SSH server
 sshp             # open the dashboard
 ```
 

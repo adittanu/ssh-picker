@@ -1,6 +1,6 @@
 {
   "name": "ssh-picker",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SSHP - a portable encrypted SSH/SFTP picker for the terminal.",
   "type": "module",
   "license": "MIT",
