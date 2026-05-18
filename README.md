@@ -13,7 +13,7 @@ npm install -g ssh-picker
 From the GitHub release tarball:
 
 ```bash
-npm install -g https://github.com/adittanu/ssh-picker/releases/download/v0.1.0/ssh-picker-0.1.0.tgz
+npm install -g https://github.com/adittanu/ssh-picker/releases/download/v0.2.1/ssh-picker-0.2.1.tgz
 ```
 
 From a local checkout:
