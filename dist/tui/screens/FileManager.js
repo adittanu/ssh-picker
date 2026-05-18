@@ -1,11 +1,15 @@
 import { jsxs as _jsxs, jsx as _jsx } from "react/jsx-runtime";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
+import { useMouse } from 'ink-use-mouse';
 import { cwd } from 'node:process';
 import { dirname, join, posix } from 'node:path';
 import { listLocalDirectory, SftpClient } from '../../sftp/client.js';
 import { decryptServerCredentials } from '../../shared/credentials.js';
 import { toFriendlyMessage } from '../../shared/errors.js';
+// Layout constants for mouse hit testing
+const PANE_START_ROW = 5; // header(1) + local path(1) + remote path(1) + margin(1) + border(1)
+const PANE_HEIGHT = 15;
 export function FileManager({ server, vault, onBack, exitOnBack = false }) {
     const { exit } = useApp();
     const [pane, setPane] = useState('local');
@@ -26,6 +30,9 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }) {
     const [activeTransfer, setActiveTransfer] = useState(null);
     const mounted = useRef(true);
     const remoteRequest = useRef(0);
+    const lastMouseEvent = useRef(null);
+    const termWidth = useRef(process.stdout.columns || 80);
+    const mouse = useMouse();
     const localFiltered = useMemo(() => filterEntries(localEntries, localQuery), [localEntries, localQuery]);
     const remoteFiltered = useMemo(() => filterEntries(remoteEntries, remoteQuery), [remoteEntries, remoteQuery]);
     const activeQuery = pane === 'local' ? localQuery : remoteQuery;
@@ -77,6 +84,73 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }) {
                 setRemoteLoading(false);
         }
     };
+    // Calculate list viewport starts for mouse mapping
+    const localVisibleSelected = Math.min(localSelected, Math.max(0, localFiltered.length - 1));
+    const remoteVisibleSelected = Math.min(remoteSelected, Math.max(0, remoteFiltered.length - 1));
+    const localListStart = Math.min(Math.max(0, localVisibleSelected - Math.floor(PANE_HEIGHT / 2)), Math.max(0, localFiltered.length - PANE_HEIGHT));
+    const remoteListStart = Math.min(Math.max(0, remoteVisibleSelected - Math.floor(PANE_HEIGHT / 2)), Math.max(0, remoteFiltered.length - PANE_HEIGHT));
+    // Mouse interaction handling
+    useEffect(() => {
+        if (pendingTransfer || searching)
+            return;
+        const { x, y, type, button } = mouse;
+        const eventKey = `${x},${y},${type}`;
+        if (lastMouseEvent.current && lastMouseEvent.current.x === x && lastMouseEvent.current.y === y && lastMouseEvent.current.type === type)
+            return;
+        lastMouseEvent.current = { x, y, type };
+        const halfWidth = Math.floor(termWidth.current / 2);
+        const isLeftPane = x < halfWidth;
+        const isRightPane = x >= halfWidth;
+        // Scroll wheel - navigate entries in the active pane
+        if (type === 'scroll-up') {
+            if (isLeftPane) {
+                setPane('local');
+                setLocalSelected((value) => Math.max(0, value - 1));
+            }
+            else {
+                setPane('remote');
+                setRemoteSelected((value) => Math.max(0, value - 1));
+            }
+            return;
+        }
+        if (type === 'scroll-down') {
+            if (isLeftPane) {
+                setPane('local');
+                setLocalSelected((value) => Math.min(Math.max(0, localFiltered.length - 1), value + 1));
+            }
+            else {
+                setPane('remote');
+                setRemoteSelected((value) => Math.min(Math.max(0, remoteFiltered.length - 1), value + 1));
+            }
+            return;
+        }
+        // Click to switch pane and select entry
+        if (type === 'press' && button === 'left') {
+            if (y >= PANE_START_ROW && y < PANE_START_ROW + PANE_HEIGHT) {
+                if (isLeftPane) {
+                    setPane('local');
+                    const clickedIndex = localListStart + (y - PANE_START_ROW);
+                    if (clickedIndex >= 0 && clickedIndex < localFiltered.length) {
+                        setLocalSelected(clickedIndex);
+                    }
+                }
+                else if (isRightPane) {
+                    setPane('remote');
+                    const clickedIndex = remoteListStart + (y - PANE_START_ROW);
+                    if (clickedIndex >= 0 && clickedIndex < remoteFiltered.length) {
+                        setRemoteSelected(clickedIndex);
+                    }
+                }
+            }
+            else {
+                // Click outside panes just switches focus
+                if (isLeftPane)
+                    setPane('local');
+                else if (isRightPane)
+                    setPane('remote');
+            }
+        }
+    }, [mouse.x, mouse.y, mouse.type, mouse.button, pendingTransfer, searching, localFiltered.length, remoteFiltered.length, localListStart, remoteListStart]);
     useEffect(() => {
         return () => {
             mounted.current = false;
@@ -214,7 +288,7 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }) {
                 exit();
         }
     });
-    return (_jsxs(Box, { flexDirection: "column", borderStyle: "round", paddingX: 1, children: [_jsxs(Box, { justifyContent: "space-between", children: [_jsxs(Text, { bold: true, color: "cyan", children: ["Files: ", server.name] }), _jsx(Text, { dimColor: true, children: pane === 'local' ? 'Local pane' : 'Remote pane' })] }), _jsxs(Text, { children: [_jsx(Text, { dimColor: true, children: "Local:" }), "  ", localPath] }), _jsxs(Text, { children: [_jsx(Text, { dimColor: true, children: "Remote:" }), " ", remotePath] }), _jsxs(Box, { marginTop: 1, children: [_jsx(PaneView, { title: "Local files", role: "download target", active: pane === 'local', entries: localFiltered, selected: localSelected, query: localQuery }), _jsx(PaneView, { title: "Remote files", role: "server source", active: pane === 'remote', entries: remoteFiltered, selected: remoteSelected, query: remoteQuery, loading: remoteLoading, spinner: spinner })] }), activeTransfer ? _jsx(TransferView, { transfer: activeTransfer, spinner: spinner }) : null, _jsx(ActionBar, { pane: pane, searching: searching, pending: Boolean(pendingTransfer) }), _jsx(SearchBar, { pane: pane, searching: searching, query: activeQuery }), _jsx(Text, { color: status === 'Ready' ? 'green' : 'yellow', children: status })] }));
+    return (_jsxs(Box, { flexDirection: "column", borderStyle: "round", paddingX: 1, children: [_jsxs(Box, { justifyContent: "space-between", children: [_jsxs(Text, { bold: true, color: "cyan", children: ["Files: ", server.name] }), _jsxs(Text, { dimColor: true, children: [pane === 'local' ? 'Local pane' : 'Remote pane', "  (click/scroll to switch)"] })] }), _jsxs(Text, { children: [_jsx(Text, { dimColor: true, children: "Local:" }), "  ", localPath] }), _jsxs(Text, { children: [_jsx(Text, { dimColor: true, children: "Remote:" }), " ", remotePath] }), _jsxs(Box, { marginTop: 1, children: [_jsx(PaneView, { title: "Local files", role: "download target", active: pane === 'local', entries: localFiltered, selected: localSelected, query: localQuery }), _jsx(PaneView, { title: "Remote files", role: "server source", active: pane === 'remote', entries: remoteFiltered, selected: remoteSelected, query: remoteQuery, loading: remoteLoading, spinner: spinner })] }), activeTransfer ? _jsx(TransferView, { transfer: activeTransfer, spinner: spinner }) : null, _jsx(ActionBar, { pane: pane, searching: searching, pending: Boolean(pendingTransfer) }), _jsx(SearchBar, { pane: pane, searching: searching, query: activeQuery }), _jsx(Text, { color: status === 'Ready' ? 'green' : 'yellow', children: status })] }));
 }
 function PaneView({ title, role, active, entries, selected, query, loading = false, spinner = 0 }) {
     const height = 15;
@@ -233,8 +307,8 @@ function ActionBar({ pane, searching, pending }) {
     if (searching)
         return _jsx(Text, { dimColor: true, children: "Type to filter  Backspace delete  Enter apply  Esc close search" });
     return pane === 'remote'
-        ? _jsx(Text, { dimColor: true, children: "Enter open  D download  / search remote  Backspace/Left up  Tab local  R refresh  Q back" })
-        : _jsx(Text, { dimColor: true, children: "Enter open  U upload  / search local  Backspace/Left up  Tab remote  R refresh  Q back" });
+        ? _jsx(Text, { dimColor: true, children: "Enter open  D download  / search  Backspace up  Tab/Click switch  Scroll navigate  Q back" })
+        : _jsx(Text, { dimColor: true, children: "Enter open  U upload  / search  Backspace up  Tab/Click switch  Scroll navigate  Q back" });
 }
 function SearchBar({ pane, searching, query }) {
     const label = pane === 'remote' ? 'Search remote' : 'Search local';

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
+import { useMouse } from 'ink-use-mouse';
 import { cwd } from 'node:process';
 import { dirname, join, posix } from 'node:path';
 import { listLocalDirectory, SftpClient, type TransferProgress } from '../../sftp/client.js';
@@ -17,6 +18,10 @@ export interface FileManagerProps {
 type Pane = 'local' | 'remote';
 type PendingTransfer = { action: 'upload' | 'download'; entry: DirectoryEntry; target: string };
 type ActiveTransfer = TransferProgress & { startedAt: number; done?: boolean };
+
+// Layout constants for mouse hit testing
+const PANE_START_ROW = 5; // header(1) + local path(1) + remote path(1) + margin(1) + border(1)
+const PANE_HEIGHT = 15;
 
 export function FileManager({ server, vault, onBack, exitOnBack = false }: FileManagerProps) {
   const { exit } = useApp();
@@ -38,6 +43,10 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }: FileM
   const [activeTransfer, setActiveTransfer] = useState<ActiveTransfer | null>(null);
   const mounted = useRef(true);
   const remoteRequest = useRef(0);
+  const lastMouseEvent = useRef<{ x: number; y: number; type: string } | null>(null);
+  const termWidth = useRef(process.stdout.columns || 80);
+
+  const mouse = useMouse();
 
   const localFiltered = useMemo(() => filterEntries(localEntries, localQuery), [localEntries, localQuery]);
   const remoteFiltered = useMemo(() => filterEntries(remoteEntries, remoteQuery), [remoteEntries, remoteQuery]);
@@ -79,6 +88,70 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }: FileM
       if (mounted.current && requestId === remoteRequest.current) setRemoteLoading(false);
     }
   };
+
+  // Calculate list viewport starts for mouse mapping
+  const localVisibleSelected = Math.min(localSelected, Math.max(0, localFiltered.length - 1));
+  const remoteVisibleSelected = Math.min(remoteSelected, Math.max(0, remoteFiltered.length - 1));
+  const localListStart = Math.min(Math.max(0, localVisibleSelected - Math.floor(PANE_HEIGHT / 2)), Math.max(0, localFiltered.length - PANE_HEIGHT));
+  const remoteListStart = Math.min(Math.max(0, remoteVisibleSelected - Math.floor(PANE_HEIGHT / 2)), Math.max(0, remoteFiltered.length - PANE_HEIGHT));
+
+  // Mouse interaction handling
+  useEffect(() => {
+    if (pendingTransfer || searching) return;
+    const { x, y, type, button } = mouse;
+    const eventKey = `${x},${y},${type}`;
+    if (lastMouseEvent.current && lastMouseEvent.current.x === x && lastMouseEvent.current.y === y && lastMouseEvent.current.type === type) return;
+    lastMouseEvent.current = { x, y, type };
+
+    const halfWidth = Math.floor(termWidth.current / 2);
+    const isLeftPane = x < halfWidth;
+    const isRightPane = x >= halfWidth;
+
+    // Scroll wheel - navigate entries in the active pane
+    if (type === 'scroll-up') {
+      if (isLeftPane) {
+        setPane('local');
+        setLocalSelected((value) => Math.max(0, value - 1));
+      } else {
+        setPane('remote');
+        setRemoteSelected((value) => Math.max(0, value - 1));
+      }
+      return;
+    }
+    if (type === 'scroll-down') {
+      if (isLeftPane) {
+        setPane('local');
+        setLocalSelected((value) => Math.min(Math.max(0, localFiltered.length - 1), value + 1));
+      } else {
+        setPane('remote');
+        setRemoteSelected((value) => Math.min(Math.max(0, remoteFiltered.length - 1), value + 1));
+      }
+      return;
+    }
+
+    // Click to switch pane and select entry
+    if (type === 'press' && button === 'left') {
+      if (y >= PANE_START_ROW && y < PANE_START_ROW + PANE_HEIGHT) {
+        if (isLeftPane) {
+          setPane('local');
+          const clickedIndex = localListStart + (y - PANE_START_ROW);
+          if (clickedIndex >= 0 && clickedIndex < localFiltered.length) {
+            setLocalSelected(clickedIndex);
+          }
+        } else if (isRightPane) {
+          setPane('remote');
+          const clickedIndex = remoteListStart + (y - PANE_START_ROW);
+          if (clickedIndex >= 0 && clickedIndex < remoteFiltered.length) {
+            setRemoteSelected(clickedIndex);
+          }
+        }
+      } else {
+        // Click outside panes just switches focus
+        if (isLeftPane) setPane('local');
+        else if (isRightPane) setPane('remote');
+      }
+    }
+  }, [mouse.x, mouse.y, mouse.type, mouse.button, pendingTransfer, searching, localFiltered.length, remoteFiltered.length, localListStart, remoteListStart]);
 
   useEffect(() => {
     return () => {
@@ -202,7 +275,7 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }: FileM
     <Box flexDirection="column" borderStyle="round" paddingX={1}>
       <Box justifyContent="space-between">
         <Text bold color="cyan">Files: {server.name}</Text>
-        <Text dimColor>{pane === 'local' ? 'Local pane' : 'Remote pane'}</Text>
+        <Text dimColor>{pane === 'local' ? 'Local pane' : 'Remote pane'}  (click/scroll to switch)</Text>
       </Box>
       <Text><Text dimColor>Local:</Text>  {localPath}</Text>
       <Text><Text dimColor>Remote:</Text> {remotePath}</Text>
@@ -244,8 +317,8 @@ function ActionBar({ pane, searching, pending }: { pane: Pane; searching: boolea
   if (pending) return <Text dimColor>Y confirm  N cancel  Esc cancel</Text>;
   if (searching) return <Text dimColor>Type to filter  Backspace delete  Enter apply  Esc close search</Text>;
   return pane === 'remote'
-    ? <Text dimColor>Enter open  D download  / search remote  Backspace/Left up  Tab local  R refresh  Q back</Text>
-    : <Text dimColor>Enter open  U upload  / search local  Backspace/Left up  Tab remote  R refresh  Q back</Text>;
+    ? <Text dimColor>Enter open  D download  / search  Backspace up  Tab/Click switch  Scroll navigate  Q back</Text>
+    : <Text dimColor>Enter open  U upload  / search  Backspace up  Tab/Click switch  Scroll navigate  Q back</Text>;
 }
 
 function SearchBar({ pane, searching, query }: { pane: Pane; searching: boolean; query: string }) {

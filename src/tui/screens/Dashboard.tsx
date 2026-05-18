@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
+import { useMouse } from 'ink-use-mouse';
 import type { ServerRecord } from '../../shared/types.js';
 
 export interface ServerFormValues {
@@ -70,6 +71,10 @@ function editForm(server: ServerRecord): ServerFormValues {
   };
 }
 
+// Layout constants for mouse hit testing
+const LIST_START_ROW = 4; // TopBar(1) + margin(1) + border(1) + header(1)
+const LIST_HEIGHT = 14;
+
 export function Dashboard({ servers, onConnect, onFiles, onTest, onAdd, onEdit, onDelete, onQuit, active = true, status }: DashboardProps) {
   const { exit } = useApp();
   const [selected, setSelected] = useState(0);
@@ -80,6 +85,9 @@ export function Dashboard({ servers, onConnect, onFiles, onTest, onAdd, onEdit, 
   const [busy, setBusy] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [spinner, setSpinner] = useState(0);
+  const lastMouseEvent = useRef<{ x: number; y: number; type: string } | null>(null);
+
+  const mouse = useMouse();
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -88,6 +96,39 @@ export function Dashboard({ servers, onConnect, onFiles, onTest, onAdd, onEdit, 
   const visibleSelected = Math.min(selected, Math.max(0, filtered.length - 1));
   const current = filtered[visibleSelected];
   const editing = mode === 'edit';
+
+  // Calculate list viewport start for mouse mapping
+  const listStart = Math.min(Math.max(0, visibleSelected - Math.floor(LIST_HEIGHT / 2)), Math.max(0, filtered.length - LIST_HEIGHT));
+
+  // Mouse interaction handling
+  useEffect(() => {
+    if (!active || mode !== 'browse' || busy) return;
+    const { x, y, type, button } = mouse;
+    const eventKey = `${x},${y},${type}`;
+    if (lastMouseEvent.current && lastMouseEvent.current.x === x && lastMouseEvent.current.y === y && lastMouseEvent.current.type === type) return;
+    lastMouseEvent.current = { x, y, type };
+
+    // Scroll wheel in server list area
+    if (type === 'scroll-up') {
+      setSelected((value) => Math.max(0, value - 1));
+      return;
+    }
+    if (type === 'scroll-down') {
+      setSelected((value) => Math.min(Math.max(0, filtered.length - 1), value + 1));
+      return;
+    }
+
+    // Click in server list area (left ~36% of width, rows after header)
+    if (type === 'press' && button === 'left') {
+      // Server list occupies roughly columns 1-30, rows LIST_START_ROW to LIST_START_ROW+LIST_HEIGHT
+      if (x >= 1 && x <= 34 && y >= LIST_START_ROW && y < LIST_START_ROW + LIST_HEIGHT) {
+        const clickedIndex = listStart + (y - LIST_START_ROW);
+        if (clickedIndex >= 0 && clickedIndex < filtered.length) {
+          setSelected(clickedIndex);
+        }
+      }
+    }
+  }, [mouse.x, mouse.y, mouse.type, mouse.button, active, mode, busy, filtered.length, listStart]);
 
   useEffect(() => {
     if (!busy) return;
@@ -316,7 +357,7 @@ function DeleteConfirm({ server }: { server: ServerRecord }) {
 
 function Footer({ mode, status, busy, spinner }: { mode: Mode; status?: string | null; busy: string | null; spinner: number }) {
   const help = mode === 'browse'
-    ? 'Up/Down select  / search  Q quit'
+    ? 'Up/Down/Scroll select  Click server  / search  Q quit'
     : mode === 'search'
       ? 'Search servers  Enter apply  Esc clear'
       : mode === 'delete'
