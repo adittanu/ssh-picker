@@ -4,10 +4,10 @@ SSHP is a terminal dashboard for saved SSH servers with an encrypted portable va
 
 ## Install
 
-From GitHub:
+From the GitHub release tarball:
 
 ```bash
-npm install -g github:adittanu/ssh-picker
+npm install -g https://github.com/adittanu/ssh-picker/releases/download/v0.1.0/ssh-picker-0.1.0.tgz
 ```
 
 From a local checkout:
