@@ -4,6 +4,12 @@ SSHP is a terminal dashboard for saved SSH servers with an encrypted portable va
 
 ## Install
 
+From npm:
+
+```bash
+npm install -g ssh-picker
+```
+
 From the GitHub release tarball:
 
 ```bash

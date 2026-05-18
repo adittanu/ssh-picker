@@ -13,7 +13,7 @@
   },
   "homepage": "https://github.com/adittanu/ssh-picker#readme",
   "bin": {
-    "sshp": "./dist/cli/index.js"
+    "sshp": "dist/cli/index.js"
   },
   "files": [
     "dist",
