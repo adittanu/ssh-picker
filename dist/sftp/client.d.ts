@@ -21,9 +21,15 @@ export declare class SftpClient {
     downloadFile(remotePath: string, localPath: string, overwrite?: boolean, onProgress?: TransferProgressHandler): Promise<void>;
     uploadRecursive(localPath: string, remotePath: string, overwrite?: boolean, onProgress?: TransferProgressHandler): Promise<void>;
     downloadRecursive(remotePath: string, localPath: string, overwrite?: boolean, onProgress?: TransferProgressHandler): Promise<void>;
+    makeRemoteDirectory(remotePath: string): Promise<void>;
+    renameRemote(sourcePath: string, targetPath: string): Promise<void>;
+    chmodRemote(remotePath: string, mode: number): Promise<void>;
+    deleteRemote(remotePath: string): Promise<void>;
     private remoteExists;
     private statRemote;
     private mkdirRemote;
+    private unlinkRemote;
+    private rmdirRemote;
     private requireSftp;
 }
 export declare function withSftp<T>(options: SftpConnectionOptions, fn: (client: SftpClient) => Promise<T>): Promise<T>;

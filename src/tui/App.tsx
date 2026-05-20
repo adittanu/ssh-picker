@@ -5,18 +5,25 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { openVaultDatabase } from '../vault/vault.js';
 import { ServerRepository } from '../db/repositories/serverRepository.js';
-import type { ServerRecord, VaultContext } from '../shared/types.js';
+import type { LocalForwardConfig, ServerRecord, VaultContext } from '../shared/types.js';
 import { encryptString } from '../vault/crypto.js';
 import { decryptServerCredentials } from '../shared/credentials.js';
 import { toFriendlyMessage } from '../shared/errors.js';
 import { Dashboard, type ServerFormValues } from './screens/Dashboard.js';
 import { FileManager } from './screens/FileManager.js';
+import { Settings } from './screens/Settings.js';
+import { loadSettings, saveSetting } from '../config/settingsManager.js';
+import { type AppSettings, type SettingKey } from '../config/settings.js';
+import { checkForUpdate, getCurrentVersion, type UpdateCheckResult } from '../update/checker.js';
 
 export interface AppProps {
   vault: VaultContext;
 }
 
-export type AppExitResult = { action: 'connect'; server: ServerRecord } | undefined;
+export type AppExitResult =
+  | { action: 'connect'; server: ServerRecord }
+  | { action: 'forward'; server: ServerRecord; forward: LocalForwardConfig }
+  | undefined;
 
 function loadServers(vault: VaultContext): ServerRecord[] {
   const db = openVaultDatabase(vault);
@@ -35,11 +42,25 @@ function readPrivateKey(path: string): string | null {
 
 export function App({ vault }: AppProps) {
   const { exit } = useApp();
-  const [screen, setScreen] = useState<'dashboard' | 'files'>('dashboard');
+  const [screen, setScreen] = useState<'dashboard' | 'files' | 'settings'>('dashboard');
   const [selectedServer, setSelectedServer] = useState<ServerRecord | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [servers, setServers] = useState<ServerRecord[]>(() => loadServers(vault));
+  const [settings, setSettings] = useState<AppSettings>(() => {
+    const db = openVaultDatabase(vault);
+    try { return loadSettings(db); } finally { db.close(); }
+  });
   const refreshServers = () => setServers(loadServers(vault));
+
+  // Auto update check on mount
+  useEffect(() => {
+    if (!settings.autoUpdateCheck) return;
+    checkForUpdate(settings.updateCheckInterval).then((result) => {
+      if (result.updateAvailable) {
+        setStatus(`Update available: v${result.latestVersion} (current: v${result.currentVersion}). Run: sshp update`);
+      }
+    }).catch(() => { /* silent */ });
+  }, []);
 
   useEffect(() => {
     if (!status) return;
@@ -51,15 +72,37 @@ export function App({ vault }: AppProps) {
     return <FileManager server={selectedServer} vault={vault} onBack={() => setScreen('dashboard')} />;
   }
 
+  if (screen === 'settings') {
+    return <Settings
+      settings={settings}
+      onSave={(key: SettingKey, value: string | number | boolean) => {
+        const db = openVaultDatabase(vault);
+        try {
+          saveSetting(db, key, value);
+          setSettings(loadSettings(db));
+        } finally {
+          db.close();
+        }
+      }}
+      onBack={() => setScreen('dashboard')}
+    />;
+  }
+
   return <>
     <Dashboard
       servers={servers}
+      settings={settings}
       status={status}
+      onSettings={() => setScreen('settings')}
       onConnect={(server) => {
         setStatus(`Opening SSH: ${server.name}`);
         exit({ action: 'connect', server } satisfies AppExitResult);
       }}
       onFiles={(server) => { setSelectedServer(server); setScreen('files'); }}
+      onForward={(server, forward) => {
+        setStatus(`Opening forward: ${server.name}`);
+        exit({ action: 'forward', server, forward } satisfies AppExitResult);
+      }}
       onTest={async (server) => {
         try {
           const { testSshConnection } = await import('../ssh/client.js');

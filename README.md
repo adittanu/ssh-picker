@@ -13,7 +13,7 @@ npm install -g ssh-picker
 From the GitHub release tarball:
 
 ```bash
-npm install -g https://github.com/adittanu/ssh-picker/releases/download/v0.2.1/ssh-picker-0.2.1.tgz
+npm install -g https://github.com/adittanu/ssh-picker/releases/download/v0.3.0/ssh-picker-0.3.0.tgz
 ```
 
 From a local checkout:
@@ -86,10 +86,12 @@ Dashboard keys:
 
 - `Enter` connect to the selected server over SSH
 - `F` open SFTP file manager
+- `P` start local port forwarding through the selected server
 - `T` test SSH connection without opening a shell
 - `A` add a new server
 - `E` edit the selected server
 - `Delete` or `Backspace` delete the selected server after confirmation
+- `S` open global settings
 - `/` search servers
 - `Q` or `Esc` quit
 
@@ -101,6 +103,10 @@ File manager keys:
 - `/` search files in the active pane
 - `U` upload selected local file/folder
 - `D` download selected remote file/folder
+- `M` create a folder in the active pane
+- `N` rename the selected file/folder
+- `X` delete the selected file/folder after confirmation
+- `C` change file/folder permissions with an octal mode such as `644` or `755`
 - `R` refresh both panes
 - `Q` or `Esc` go back or quit when launched with `sshp files`
 
@@ -111,6 +117,7 @@ Transfers show a live progress bar for the active file and keep the panes usable
 ```bash
 sshp list
 sshp connect <server>
+sshp forward <server> 8080:127.0.0.1:80
 sshp files <server>
 sshp upload <server> <local> <remote>
 sshp download <server> <remote> <local>
@@ -120,6 +127,10 @@ sshp import-ssh-config [file]
 sshp import-termius hosts.csv
 sshp config set dataDir <path>
 ```
+
+Port forwarding keeps running until you press `Ctrl+C`. The forward spec accepts
+`localPort:remoteHost:remotePort`, or `localPort:remotePort` when the remote host
+is `127.0.0.1`.
 
 ## Security notes
 

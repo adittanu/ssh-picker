@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { resolveDataDir, resolveDbPath, writeBootstrapConfig } from '../config/paths.js';
 import { toFriendlyMessage } from '../shared/errors.js';
-import type { ServerRecord, VaultContext } from '../shared/types.js';
+import type { LocalForwardConfig, ServerRecord, VaultContext } from '../shared/types.js';
 import type { AppExitResult } from '../tui/App.js';
 
 const originalEmitWarning = process.emitWarning.bind(process);
@@ -50,6 +50,16 @@ function renderSshHandoff(server: ServerRecord): void {
   console.log(terminalLine());
   console.log(`${dim}Connected terminal is now fully controlled by ${server.username}@${server.host}:${server.port}.${reset}`);
   console.log(`${dim}Type exit or press Ctrl+D in the remote shell to close the session.${reset}`);
+  console.log();
+}
+
+function renderForwardHandoff(server: ServerRecord, forward: LocalForwardConfig): void {
+  clearTerminal();
+  console.log(`${cyan}SSHP Forward${reset} ${dim}${server.name}${reset}`);
+  console.log(terminalLine());
+  console.log(`${green}${forward.localHost}:${forward.localPort}${reset} -> ${forward.remoteHost}:${forward.remotePort}`);
+  console.log(`${dim}Traffic is tunneled through ${server.username}@${server.host}:${server.port}.${reset}`);
+  console.log(`${dim}Press Ctrl+C to stop forwarding.${reset}`);
   console.log();
 }
 
@@ -158,6 +168,27 @@ function normalizeAuthType(value: string): 'password' | 'private_key' {
   return parseAuthType(value) ?? 'password';
 }
 
+function parseForwardSpec(value: string): LocalForwardConfig {
+  const parts = value.split(':');
+  if (parts.length !== 2 && parts.length !== 3) {
+    throw new Error('Forward format must be localPort:remoteHost:remotePort or localPort:remotePort.');
+  }
+  const [localPortText, remoteHostOrPort, maybeRemotePort] = parts;
+  const localPort = parsePort(localPortText, 'local port');
+  const remoteHost = parts.length === 3 ? remoteHostOrPort : '127.0.0.1';
+  const remotePort = parsePort(maybeRemotePort ?? remoteHostOrPort, 'remote port');
+  if (!remoteHost.trim()) throw new Error('Remote host is required.');
+  return { localHost: '127.0.0.1', localPort, remoteHost: remoteHost.trim(), remotePort };
+}
+
+function parsePort(value: string, label: string): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+    throw new Error(`${label} must be between 1 and 65535.`);
+  }
+  return port;
+}
+
 function expandUserPath(path: string): string {
   if (path === '~' || path.startsWith('~/')) {
     return join(homedir(), path.slice(2));
@@ -234,6 +265,24 @@ async function runConnect(name: string): Promise<void> {
   await recordServerAction(vault.dbPath, server.id, 'ssh');
 }
 
+async function runForward(name: string, spec: string): Promise<void> {
+  const [{ startLocalPortForward }, { decryptServerCredentials }] = await Promise.all([
+    import('../ssh/forwarding.js'),
+    import('../shared/credentials.js')
+  ]);
+  const forward = parseForwardSpec(spec);
+  const { vault, server } = await loadServer(name);
+  renderForwardHandoff(server, forward);
+  await startLocalPortForward({
+    server,
+    credentials: decryptServerCredentials(server, vault),
+    ...forward,
+    onReady: () => console.log(`${green}Forwarding active.${reset}`),
+    onConnection: (source) => console.log(`${dim}Connection from ${source}${reset}`)
+  });
+  await recordServerAction(vault.dbPath, server.id, 'forward', `${forward.localHost}:${forward.localPort}`, `${forward.remoteHost}:${forward.remotePort}`);
+}
+
 async function runDashboard(): Promise<void> {
   const vault = await unlockOrInitializeVault();
   const servers = await listServers(vault);
@@ -264,6 +313,21 @@ async function runDashboard(): Promise<void> {
     renderSshHandoff(result.server);
     await connectSsh({ server: result.server, credentials: decryptServerCredentials(result.server, vault) });
     await recordServerAction(vault.dbPath, result.server.id, 'ssh');
+  }
+  if (result?.action === 'forward') {
+    const [{ startLocalPortForward }, { decryptServerCredentials }] = await Promise.all([
+      import('../ssh/forwarding.js'),
+      import('../shared/credentials.js')
+    ]);
+    renderForwardHandoff(result.server, result.forward);
+    await startLocalPortForward({
+      server: result.server,
+      credentials: decryptServerCredentials(result.server, vault),
+      ...result.forward,
+      onReady: () => console.log(`${green}Forwarding active.${reset}`),
+      onConnection: (source) => console.log(`${dim}Connection from ${source}${reset}`)
+    });
+    await recordServerAction(vault.dbPath, result.server.id, 'forward', `${result.forward.localHost}:${result.forward.localPort}`, `${result.forward.remoteHost}:${result.forward.remotePort}`);
   }
 }
 
@@ -340,18 +404,51 @@ async function runImportTermius(file: string): Promise<void> {
   console.log(`Imported ${result.imported} host(s) from Termius CSV. Skipped ${result.skipped} duplicate(s).`);
 }
 
+async function runUpdate(): Promise<void> {
+  const { checkForUpdate, getCurrentVersion } = await import('../update/checker.js');
+  const { execSync } = await import('node:child_process');
+
+  console.log(`${cyan}SSHP Update${reset}`);
+  console.log(terminalLine());
+
+  const currentVersion = getCurrentVersion();
+  console.log(`Current version: v${currentVersion}`);
+  console.log(`${dim}Checking for updates...${reset}`);
+
+  const result = await checkForUpdate(0); // force fresh check
+
+  if (!result.updateAvailable) {
+    console.log(`${green}Already up to date!${reset}`);
+    return;
+  }
+
+  console.log(`New version available: ${green}v${result.latestVersion}${reset}`);
+  const ok = await confirm({ message: `Update to v${result.latestVersion}?`, default: true });
+  if (!ok) return;
+
+  console.log(`${dim}Updating...${reset}`);
+  try {
+    execSync('npm install -g ssh-picker@latest', { stdio: 'inherit' });
+    console.log(`\n${green}Updated to v${result.latestVersion}!${reset}`);
+  } catch {
+    console.error('Update failed. Try manually: npm install -g ssh-picker@latest');
+    process.exitCode = 1;
+  }
+}
+
 async function main(): Promise<void> {
   const program = new Command();
   program
     .name('sshp')
     .description('Portable encrypted SSH/SFTP picker')
-    .version('0.1.3')
+    .version('0.3.0')
     .action(runDashboard);
 
   program.command('init').description('Create a portable encrypted vault').action(runInit);
   program.command('add').description('Add a password-based SSH server').action(runAdd);
   program.command('list').description('List saved servers').action(runList);
   program.command('connect <server>').description('Connect to a server over SSH').action(runConnect);
+  program.command('forward <server> <spec>').description('Forward a local port over SSH (localPort:remoteHost:remotePort)').action(runForward);
   program.command('files <server>').description('Open the SFTP file manager').action(runFiles);
   program.command('upload <server> <local> <remote>').description('Upload a file or folder over SFTP').action(runUpload);
   program.command('download <server> <remote> <local>').description('Download a file over SFTP').action(runDownload);
@@ -359,6 +456,8 @@ async function main(): Promise<void> {
   program.command('import <file>').description('Import encrypted vault backup').action(runImport);
   program.command('import-ssh-config [file]').description('Import hosts from OpenSSH config').action(runImportSshConfig);
   program.command('import-termius <csv>').description('Import hosts from a Termius-style CSV').action(runImportTermius);
+
+  program.command('update').description('Update SSHP to the latest version').action(runUpdate);
 
   const config = program.command('config').description('Manage SSHP configuration');
   config.command('set <key> <value>').description('Set a config value').action((key, value) => {

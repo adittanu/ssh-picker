@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { useMouse } from 'ink-use-mouse';
 import { cwd } from 'node:process';
-import { dirname, join, posix } from 'node:path';
+import { chmodSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { dirname, isAbsolute, join, posix } from 'node:path';
 import { listLocalDirectory, SftpClient } from '../../sftp/client.js';
 import { decryptServerCredentials } from '../../shared/credentials.js';
 import { toFriendlyMessage } from '../../shared/errors.js';
@@ -22,6 +23,8 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }) {
     const [status, setStatus] = useState('Connecting SFTP...');
     const [client, setClient] = useState(null);
     const [pendingTransfer, setPendingTransfer] = useState(null);
+    const [pendingDelete, setPendingDelete] = useState(null);
+    const [textPrompt, setTextPrompt] = useState(null);
     const [remoteLoading, setRemoteLoading] = useState(true);
     const [searching, setSearching] = useState(false);
     const [localQuery, setLocalQuery] = useState('');
@@ -84,6 +87,107 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }) {
                 setRemoteLoading(false);
         }
     };
+    const selectedEntryForPane = (targetPane) => {
+        const entries = targetPane === 'local' ? localFiltered : remoteFiltered;
+        const selected = targetPane === 'local'
+            ? Math.min(localSelected, Math.max(0, localFiltered.length - 1))
+            : Math.min(remoteSelected, Math.max(0, remoteFiltered.length - 1));
+        return entries[selected];
+    };
+    const openTextAction = (action) => {
+        const entry = selectedEntryForPane(pane);
+        if ((action === 'rename' || action === 'chmod') && !entry) {
+            safeSetStatus('Select a file or folder first.');
+            return;
+        }
+        setTextPrompt({
+            action,
+            pane,
+            entry,
+            value: action === 'rename' ? entry?.name ?? '' : action === 'chmod' ? defaultMode(entry) : ''
+        });
+        safeSetStatus(`${actionLabel(action)} in ${pane} pane.`);
+    };
+    const executeTextPrompt = async () => {
+        if (!textPrompt)
+            return;
+        const value = textPrompt.value.trim();
+        if (!value) {
+            safeSetStatus(`${actionLabel(textPrompt.action)} value is required.`);
+            return;
+        }
+        try {
+            if (textPrompt.action === 'mkdir') {
+                if (textPrompt.pane === 'local') {
+                    mkdirSync(resolveLocalChild(localPath, value));
+                    refreshLocal();
+                }
+                else {
+                    if (!client)
+                        throw new Error('SFTP client is not connected.');
+                    await client.makeRemoteDirectory(joinRemotePath(remotePath, value));
+                    await refreshRemote();
+                }
+                safeSetStatus(`Created folder: ${value}`);
+            }
+            if (textPrompt.action === 'rename' && textPrompt.entry) {
+                if (textPrompt.pane === 'local') {
+                    renameSync(textPrompt.entry.path, resolveLocalChild(dirname(textPrompt.entry.path), value));
+                    refreshLocal();
+                }
+                else {
+                    if (!client)
+                        throw new Error('SFTP client is not connected.');
+                    await client.renameRemote(textPrompt.entry.path, joinRemotePath(parentRemotePath(textPrompt.entry.path), value));
+                    await refreshRemote();
+                }
+                safeSetStatus(`Renamed to: ${value}`);
+            }
+            if (textPrompt.action === 'chmod' && textPrompt.entry) {
+                const mode = parseFileMode(value);
+                if (mode === null) {
+                    safeSetStatus('Mode must be octal, for example 644 or 755.');
+                    return;
+                }
+                if (textPrompt.pane === 'local') {
+                    chmodSync(textPrompt.entry.path, mode);
+                    refreshLocal();
+                }
+                else {
+                    if (!client)
+                        throw new Error('SFTP client is not connected.');
+                    await client.chmodRemote(textPrompt.entry.path, mode);
+                    await refreshRemote();
+                }
+                safeSetStatus(`Changed mode to ${value}`);
+            }
+            setTextPrompt(null);
+        }
+        catch (error) {
+            safeSetStatus(toFriendlyMessage(error));
+        }
+    };
+    const confirmDelete = async (pending) => {
+        try {
+            if (pending.pane === 'local') {
+                rmSync(pending.entry.path, { recursive: pending.entry.isDirectory, force: false });
+                refreshLocal();
+            }
+            else {
+                if (!client)
+                    throw new Error('SFTP client is not connected.');
+                await client.deleteRemote(pending.entry.path);
+                await refreshRemote();
+            }
+            safeSetStatus(`Deleted ${pending.entry.name}`);
+        }
+        catch (error) {
+            safeSetStatus(toFriendlyMessage(error));
+        }
+        finally {
+            setPendingDelete(null);
+        }
+    };
     // Calculate list viewport starts for mouse mapping
     const localVisibleSelected = Math.min(localSelected, Math.max(0, localFiltered.length - 1));
     const remoteVisibleSelected = Math.min(remoteSelected, Math.max(0, remoteFiltered.length - 1));
@@ -91,7 +195,7 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }) {
     const remoteListStart = Math.min(Math.max(0, remoteVisibleSelected - Math.floor(PANE_HEIGHT / 2)), Math.max(0, remoteFiltered.length - PANE_HEIGHT));
     // Mouse interaction handling
     useEffect(() => {
-        if (pendingTransfer || searching)
+        if (pendingTransfer || pendingDelete || textPrompt || searching)
             return;
         const { x, y, type, button } = mouse;
         const eventKey = `${x},${y},${type}`;
@@ -150,7 +254,7 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }) {
                     setPane('remote');
             }
         }
-    }, [mouse.x, mouse.y, mouse.type, mouse.button, pendingTransfer, searching, localFiltered.length, remoteFiltered.length, localListStart, remoteListStart]);
+    }, [mouse.x, mouse.y, mouse.type, mouse.button, pendingTransfer, pendingDelete, textPrompt, searching, localFiltered.length, remoteFiltered.length, localListStart, remoteListStart]);
     useEffect(() => {
         return () => {
             mounted.current = false;
@@ -220,6 +324,32 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }) {
             }
             return;
         }
+        if (pendingDelete) {
+            if (input === 'y' || input === 'Y') {
+                void confirmDelete(pendingDelete);
+            }
+            else if (input === 'n' || input === 'N' || key.escape) {
+                setPendingDelete(null);
+                safeSetStatus('Delete cancelled');
+            }
+            return;
+        }
+        if (textPrompt) {
+            if (key.escape) {
+                setTextPrompt(null);
+                safeSetStatus(`${actionLabel(textPrompt.action)} cancelled`);
+            }
+            else if (key.return) {
+                void executeTextPrompt();
+            }
+            else if (key.backspace || key.delete) {
+                setTextPrompt((current) => current ? { ...current, value: current.value.slice(0, -1) } : current);
+            }
+            else if (input) {
+                setTextPrompt((current) => current ? { ...current, value: current.value + input } : current);
+            }
+            return;
+        }
         if (searching) {
             if (key.return || key.escape)
                 setSearching(false);
@@ -282,13 +412,28 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }) {
             setPendingTransfer({ action: 'download', entry, target });
             safeSetStatus(`Download ${entry.isDirectory ? 'folder' : 'file'} "${entry.name}" from remote to ${target}? Press Y to confirm, N to cancel.`);
         }
+        if (input === 'm' || input === 'M')
+            openTextAction('mkdir');
+        if (input === 'n' || input === 'N')
+            openTextAction('rename');
+        if (input === 'c' || input === 'C')
+            openTextAction('chmod');
+        if (input === 'x' || input === 'X') {
+            if (!current) {
+                safeSetStatus('Select a file or folder first.');
+            }
+            else {
+                setPendingDelete({ pane, entry: current });
+                safeSetStatus(`Delete ${current.isDirectory ? 'folder' : 'file'} "${current.name}"? Press Y to confirm, N to cancel.`);
+            }
+        }
         if (input === 'q' || input === 'Q' || key.escape) {
             onBack();
             if (exitOnBack)
                 exit();
         }
     });
-    return (_jsxs(Box, { flexDirection: "column", borderStyle: "round", paddingX: 1, children: [_jsxs(Box, { justifyContent: "space-between", children: [_jsxs(Text, { bold: true, color: "cyan", children: ["Files: ", server.name] }), _jsxs(Text, { dimColor: true, children: [pane === 'local' ? 'Local pane' : 'Remote pane', "  (click/scroll to switch)"] })] }), _jsxs(Text, { children: [_jsx(Text, { dimColor: true, children: "Local:" }), "  ", localPath] }), _jsxs(Text, { children: [_jsx(Text, { dimColor: true, children: "Remote:" }), " ", remotePath] }), _jsxs(Box, { marginTop: 1, children: [_jsx(PaneView, { title: "Local files", role: "download target", active: pane === 'local', entries: localFiltered, selected: localSelected, query: localQuery }), _jsx(PaneView, { title: "Remote files", role: "server source", active: pane === 'remote', entries: remoteFiltered, selected: remoteSelected, query: remoteQuery, loading: remoteLoading, spinner: spinner })] }), activeTransfer ? _jsx(TransferView, { transfer: activeTransfer, spinner: spinner }) : null, _jsx(ActionBar, { pane: pane, searching: searching, pending: Boolean(pendingTransfer) }), _jsx(SearchBar, { pane: pane, searching: searching, query: activeQuery }), _jsx(Text, { color: status === 'Ready' ? 'green' : 'yellow', children: status })] }));
+    return (_jsxs(Box, { flexDirection: "column", borderStyle: "round", paddingX: 1, children: [_jsxs(Box, { justifyContent: "space-between", children: [_jsxs(Text, { bold: true, color: "cyan", children: ["Files: ", server.name] }), _jsxs(Text, { dimColor: true, children: [pane === 'local' ? 'Local pane' : 'Remote pane', "  (click/scroll to switch)"] })] }), _jsxs(Text, { children: [_jsx(Text, { dimColor: true, children: "Local:" }), "  ", localPath] }), _jsxs(Text, { children: [_jsx(Text, { dimColor: true, children: "Remote:" }), " ", remotePath] }), _jsxs(Box, { marginTop: 1, children: [_jsx(PaneView, { title: "Local files", role: "download target", active: pane === 'local', entries: localFiltered, selected: localSelected, query: localQuery }), _jsx(PaneView, { title: "Remote files", role: "server source", active: pane === 'remote', entries: remoteFiltered, selected: remoteSelected, query: remoteQuery, loading: remoteLoading, spinner: spinner })] }), activeTransfer ? _jsx(TransferView, { transfer: activeTransfer, spinner: spinner }) : null, _jsx(ActionBar, { pane: pane, searching: searching, pending: Boolean(pendingTransfer || pendingDelete), prompting: Boolean(textPrompt) }), textPrompt ? _jsx(TextPromptBar, { prompt: textPrompt }) : null, _jsx(SearchBar, { pane: pane, searching: searching, query: activeQuery }), _jsx(Text, { color: status === 'Ready' ? 'green' : 'yellow', children: status })] }));
 }
 function PaneView({ title, role, active, entries, selected, query, loading = false, spinner = 0 }) {
     const height = 15;
@@ -301,14 +446,19 @@ function PaneView({ title, role, active, entries, selected, query, loading = fal
                 return (_jsxs(Text, { color: absoluteIndex === visibleSelected ? 'cyan' : undefined, children: [absoluteIndex === visibleSelected ? '› ' : '  ', entry.name, entry.isDirectory ? '/' : ''] }, entry.path));
             })] });
 }
-function ActionBar({ pane, searching, pending }) {
+function ActionBar({ pane, searching, pending, prompting }) {
     if (pending)
         return _jsx(Text, { dimColor: true, children: "Y confirm  N cancel  Esc cancel" });
+    if (prompting)
+        return _jsx(Text, { dimColor: true, children: "Type value  Enter apply  Backspace delete  Esc cancel" });
     if (searching)
         return _jsx(Text, { dimColor: true, children: "Type to filter  Backspace delete  Enter apply  Esc close search" });
     return pane === 'remote'
-        ? _jsx(Text, { dimColor: true, children: "Enter open  D download  / search  Backspace up  Tab/Click switch  Scroll navigate  Q back" })
-        : _jsx(Text, { dimColor: true, children: "Enter open  U upload  / search  Backspace up  Tab/Click switch  Scroll navigate  Q back" });
+        ? _jsx(Text, { dimColor: true, children: "Enter open  D download  M mkdir  N rename  X delete  C chmod  / search  Tab switch  Q back" })
+        : _jsx(Text, { dimColor: true, children: "Enter open  U upload  M mkdir  N rename  X delete  C chmod  / search  Tab switch  Q back" });
+}
+function TextPromptBar({ prompt }) {
+    return _jsxs(Text, { color: "cyan", children: [actionLabel(prompt.action), " ", prompt.pane, ": ", prompt.value, "\u2588 ", _jsx(Text, { dimColor: true, children: "Enter apply  Esc cancel" })] });
 }
 function SearchBar({ pane, searching, query }) {
     const label = pane === 'remote' ? 'Search remote' : 'Search local';
@@ -352,6 +502,31 @@ function filterEntries(entries, query) {
     if (!q)
         return entries;
     return entries.filter((entry) => entry.name.toLowerCase().includes(q));
+}
+function actionLabel(action) {
+    if (action === 'mkdir')
+        return 'New folder';
+    if (action === 'rename')
+        return 'Rename';
+    return 'Chmod';
+}
+function defaultMode(entry) {
+    return entry?.isDirectory ? '755' : '644';
+}
+function parseFileMode(value) {
+    if (!/^[0-7]{3,4}$/.test(value))
+        return null;
+    return Number.parseInt(value, 8);
+}
+function resolveLocalChild(base, value) {
+    return isAbsolute(value) ? value : join(base, value);
+}
+function joinRemotePath(base, value) {
+    if (value.startsWith('/'))
+        return posix.normalize(value);
+    if (!base.trim() || base === '.')
+        return value;
+    return posix.join(base, value);
 }
 function parentRemotePath(path) {
     const trimmed = path.trim();

@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { useMouse } from 'ink-use-mouse';
 import { cwd } from 'node:process';
-import { dirname, join, posix } from 'node:path';
+import { chmodSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { dirname, isAbsolute, join, posix } from 'node:path';
 import { listLocalDirectory, SftpClient, type TransferProgress } from '../../sftp/client.js';
 import { decryptServerCredentials } from '../../shared/credentials.js';
 import type { DirectoryEntry, ServerRecord, VaultContext } from '../../shared/types.js';
@@ -17,6 +18,9 @@ export interface FileManagerProps {
 
 type Pane = 'local' | 'remote';
 type PendingTransfer = { action: 'upload' | 'download'; entry: DirectoryEntry; target: string };
+type PendingDelete = { pane: Pane; entry: DirectoryEntry };
+type TextAction = 'mkdir' | 'rename' | 'chmod';
+type TextPrompt = { action: TextAction; pane: Pane; value: string; entry?: DirectoryEntry };
 type ActiveTransfer = TransferProgress & { startedAt: number; done?: boolean };
 
 // Layout constants for mouse hit testing
@@ -35,6 +39,8 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }: FileM
   const [status, setStatus] = useState('Connecting SFTP...');
   const [client, setClient] = useState<SftpClient | null>(null);
   const [pendingTransfer, setPendingTransfer] = useState<PendingTransfer | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [textPrompt, setTextPrompt] = useState<TextPrompt | null>(null);
   const [remoteLoading, setRemoteLoading] = useState(true);
   const [searching, setSearching] = useState(false);
   const [localQuery, setLocalQuery] = useState('');
@@ -89,6 +95,103 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }: FileM
     }
   };
 
+  const selectedEntryForPane = (targetPane: Pane): DirectoryEntry | undefined => {
+    const entries = targetPane === 'local' ? localFiltered : remoteFiltered;
+    const selected = targetPane === 'local'
+      ? Math.min(localSelected, Math.max(0, localFiltered.length - 1))
+      : Math.min(remoteSelected, Math.max(0, remoteFiltered.length - 1));
+    return entries[selected];
+  };
+
+  const openTextAction = (action: TextAction) => {
+    const entry = selectedEntryForPane(pane);
+    if ((action === 'rename' || action === 'chmod') && !entry) {
+      safeSetStatus('Select a file or folder first.');
+      return;
+    }
+    setTextPrompt({
+      action,
+      pane,
+      entry,
+      value: action === 'rename' ? entry?.name ?? '' : action === 'chmod' ? defaultMode(entry) : ''
+    });
+    safeSetStatus(`${actionLabel(action)} in ${pane} pane.`);
+  };
+
+  const executeTextPrompt = async () => {
+    if (!textPrompt) return;
+    const value = textPrompt.value.trim();
+    if (!value) {
+      safeSetStatus(`${actionLabel(textPrompt.action)} value is required.`);
+      return;
+    }
+
+    try {
+      if (textPrompt.action === 'mkdir') {
+        if (textPrompt.pane === 'local') {
+          mkdirSync(resolveLocalChild(localPath, value));
+          refreshLocal();
+        } else {
+          if (!client) throw new Error('SFTP client is not connected.');
+          await client.makeRemoteDirectory(joinRemotePath(remotePath, value));
+          await refreshRemote();
+        }
+        safeSetStatus(`Created folder: ${value}`);
+      }
+
+      if (textPrompt.action === 'rename' && textPrompt.entry) {
+        if (textPrompt.pane === 'local') {
+          renameSync(textPrompt.entry.path, resolveLocalChild(dirname(textPrompt.entry.path), value));
+          refreshLocal();
+        } else {
+          if (!client) throw new Error('SFTP client is not connected.');
+          await client.renameRemote(textPrompt.entry.path, joinRemotePath(parentRemotePath(textPrompt.entry.path), value));
+          await refreshRemote();
+        }
+        safeSetStatus(`Renamed to: ${value}`);
+      }
+
+      if (textPrompt.action === 'chmod' && textPrompt.entry) {
+        const mode = parseFileMode(value);
+        if (mode === null) {
+          safeSetStatus('Mode must be octal, for example 644 or 755.');
+          return;
+        }
+        if (textPrompt.pane === 'local') {
+          chmodSync(textPrompt.entry.path, mode);
+          refreshLocal();
+        } else {
+          if (!client) throw new Error('SFTP client is not connected.');
+          await client.chmodRemote(textPrompt.entry.path, mode);
+          await refreshRemote();
+        }
+        safeSetStatus(`Changed mode to ${value}`);
+      }
+
+      setTextPrompt(null);
+    } catch (error) {
+      safeSetStatus(toFriendlyMessage(error));
+    }
+  };
+
+  const confirmDelete = async (pending: PendingDelete) => {
+    try {
+      if (pending.pane === 'local') {
+        rmSync(pending.entry.path, { recursive: pending.entry.isDirectory, force: false });
+        refreshLocal();
+      } else {
+        if (!client) throw new Error('SFTP client is not connected.');
+        await client.deleteRemote(pending.entry.path);
+        await refreshRemote();
+      }
+      safeSetStatus(`Deleted ${pending.entry.name}`);
+    } catch (error) {
+      safeSetStatus(toFriendlyMessage(error));
+    } finally {
+      setPendingDelete(null);
+    }
+  };
+
   // Calculate list viewport starts for mouse mapping
   const localVisibleSelected = Math.min(localSelected, Math.max(0, localFiltered.length - 1));
   const remoteVisibleSelected = Math.min(remoteSelected, Math.max(0, remoteFiltered.length - 1));
@@ -97,7 +200,7 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }: FileM
 
   // Mouse interaction handling
   useEffect(() => {
-    if (pendingTransfer || searching) return;
+    if (pendingTransfer || pendingDelete || textPrompt || searching) return;
     const { x, y, type, button } = mouse;
     const eventKey = `${x},${y},${type}`;
     if (lastMouseEvent.current && lastMouseEvent.current.x === x && lastMouseEvent.current.y === y && lastMouseEvent.current.type === type) return;
@@ -151,7 +254,7 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }: FileM
         else if (isRightPane) setPane('remote');
       }
     }
-  }, [mouse.x, mouse.y, mouse.type, mouse.button, pendingTransfer, searching, localFiltered.length, remoteFiltered.length, localListStart, remoteListStart]);
+  }, [mouse.x, mouse.y, mouse.type, mouse.button, pendingTransfer, pendingDelete, textPrompt, searching, localFiltered.length, remoteFiltered.length, localListStart, remoteListStart]);
 
   useEffect(() => {
     return () => {
@@ -221,6 +324,30 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }: FileM
       return;
     }
 
+    if (pendingDelete) {
+      if (input === 'y' || input === 'Y') {
+        void confirmDelete(pendingDelete);
+      } else if (input === 'n' || input === 'N' || key.escape) {
+        setPendingDelete(null);
+        safeSetStatus('Delete cancelled');
+      }
+      return;
+    }
+
+    if (textPrompt) {
+      if (key.escape) {
+        setTextPrompt(null);
+        safeSetStatus(`${actionLabel(textPrompt.action)} cancelled`);
+      } else if (key.return) {
+        void executeTextPrompt();
+      } else if (key.backspace || key.delete) {
+        setTextPrompt((current) => current ? { ...current, value: current.value.slice(0, -1) } : current);
+      } else if (input) {
+        setTextPrompt((current) => current ? { ...current, value: current.value + input } : current);
+      }
+      return;
+    }
+
     if (searching) {
       if (key.return || key.escape) setSearching(false);
       else if (key.backspace || key.delete) setActiveQuery((value) => value.slice(0, -1));
@@ -265,6 +392,17 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }: FileM
       setPendingTransfer({ action: 'download', entry, target });
       safeSetStatus(`Download ${entry.isDirectory ? 'folder' : 'file'} "${entry.name}" from remote to ${target}? Press Y to confirm, N to cancel.`);
     }
+    if (input === 'm' || input === 'M') openTextAction('mkdir');
+    if (input === 'n' || input === 'N') openTextAction('rename');
+    if (input === 'c' || input === 'C') openTextAction('chmod');
+    if (input === 'x' || input === 'X') {
+      if (!current) {
+        safeSetStatus('Select a file or folder first.');
+      } else {
+        setPendingDelete({ pane, entry: current });
+        safeSetStatus(`Delete ${current.isDirectory ? 'folder' : 'file'} "${current.name}"? Press Y to confirm, N to cancel.`);
+      }
+    }
     if (input === 'q' || input === 'Q' || key.escape) {
       onBack();
       if (exitOnBack) exit();
@@ -284,7 +422,8 @@ export function FileManager({ server, vault, onBack, exitOnBack = false }: FileM
         <PaneView title="Remote files" role="server source" active={pane === 'remote'} entries={remoteFiltered} selected={remoteSelected} query={remoteQuery} loading={remoteLoading} spinner={spinner} />
       </Box>
       {activeTransfer ? <TransferView transfer={activeTransfer} spinner={spinner} /> : null}
-      <ActionBar pane={pane} searching={searching} pending={Boolean(pendingTransfer)} />
+      <ActionBar pane={pane} searching={searching} pending={Boolean(pendingTransfer || pendingDelete)} prompting={Boolean(textPrompt)} />
+      {textPrompt ? <TextPromptBar prompt={textPrompt} /> : null}
       <SearchBar pane={pane} searching={searching} query={activeQuery} />
       <Text color={status === 'Ready' ? 'green' : 'yellow'}>{status}</Text>
     </Box>
@@ -313,12 +452,17 @@ function PaneView({ title, role, active, entries, selected, query, loading = fal
   </Box>;
 }
 
-function ActionBar({ pane, searching, pending }: { pane: Pane; searching: boolean; pending: boolean }) {
+function ActionBar({ pane, searching, pending, prompting }: { pane: Pane; searching: boolean; pending: boolean; prompting: boolean }) {
   if (pending) return <Text dimColor>Y confirm  N cancel  Esc cancel</Text>;
+  if (prompting) return <Text dimColor>Type value  Enter apply  Backspace delete  Esc cancel</Text>;
   if (searching) return <Text dimColor>Type to filter  Backspace delete  Enter apply  Esc close search</Text>;
   return pane === 'remote'
-    ? <Text dimColor>Enter open  D download  / search  Backspace up  Tab/Click switch  Scroll navigate  Q back</Text>
-    : <Text dimColor>Enter open  U upload  / search  Backspace up  Tab/Click switch  Scroll navigate  Q back</Text>;
+    ? <Text dimColor>Enter open  D download  M mkdir  N rename  X delete  C chmod  / search  Tab switch  Q back</Text>
+    : <Text dimColor>Enter open  U upload  M mkdir  N rename  X delete  C chmod  / search  Tab switch  Q back</Text>;
+}
+
+function TextPromptBar({ prompt }: { prompt: TextPrompt }) {
+  return <Text color="cyan">{actionLabel(prompt.action)} {prompt.pane}: {prompt.value}█ <Text dimColor>Enter apply  Esc cancel</Text></Text>;
 }
 
 function SearchBar({ pane, searching, query }: { pane: Pane; searching: boolean; query: string }) {
@@ -369,6 +513,31 @@ function filterEntries(entries: DirectoryEntry[], query: string): DirectoryEntry
   const q = query.trim().toLowerCase();
   if (!q) return entries;
   return entries.filter((entry) => entry.name.toLowerCase().includes(q));
+}
+
+function actionLabel(action: TextAction): string {
+  if (action === 'mkdir') return 'New folder';
+  if (action === 'rename') return 'Rename';
+  return 'Chmod';
+}
+
+function defaultMode(entry?: DirectoryEntry): string {
+  return entry?.isDirectory ? '755' : '644';
+}
+
+function parseFileMode(value: string): number | null {
+  if (!/^[0-7]{3,4}$/.test(value)) return null;
+  return Number.parseInt(value, 8);
+}
+
+function resolveLocalChild(base: string, value: string): string {
+  return isAbsolute(value) ? value : join(base, value);
+}
+
+function joinRemotePath(base: string, value: string): string {
+  if (value.startsWith('/')) return posix.normalize(value);
+  if (!base.trim() || base === '.') return value;
+  return posix.join(base, value);
 }
 
 function parentRemotePath(path: string): string {

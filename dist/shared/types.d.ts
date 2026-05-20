@@ -47,6 +47,12 @@ export interface ServerCredentials {
     privateKey?: string;
     passphrase?: string;
 }
+export interface LocalForwardConfig {
+    localHost: string;
+    localPort: number;
+    remoteHost: string;
+    remotePort: number;
+}
 export interface DirectoryEntry {
     name: string;
     path: string;

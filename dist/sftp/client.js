@@ -107,6 +107,35 @@ export class SftpClient {
                 await this.downloadFile(entry.path, target, overwrite, onProgress);
         }
     }
+    async makeRemoteDirectory(remotePath) {
+        const sftp = this.requireSftp();
+        await withTimeout(new Promise((resolve, reject) => {
+            sftp.mkdir(remotePath, { mode: 0o755 }, (err) => err ? reject(err) : resolve());
+        }), `Remote mkdir did not respond: ${remotePath}`);
+    }
+    async renameRemote(sourcePath, targetPath) {
+        const sftp = this.requireSftp();
+        await withTimeout(new Promise((resolve, reject) => {
+            sftp.rename(sourcePath, targetPath, (err) => err ? reject(err) : resolve());
+        }), `Remote rename did not respond: ${sourcePath}`);
+    }
+    async chmodRemote(remotePath, mode) {
+        const sftp = this.requireSftp();
+        await withTimeout(new Promise((resolve, reject) => {
+            sftp.chmod(remotePath, mode, (err) => err ? reject(err) : resolve());
+        }), `Remote chmod did not respond: ${remotePath}`);
+    }
+    async deleteRemote(remotePath) {
+        const stats = await this.statRemote(remotePath);
+        if (!stats.isDirectory()) {
+            await this.unlinkRemote(remotePath);
+            return;
+        }
+        for (const entry of await this.listRemoteDirectory(remotePath)) {
+            await this.deleteRemote(entry.path);
+        }
+        await this.rmdirRemote(remotePath);
+    }
     async remoteExists(remotePath) {
         const sftp = this.requireSftp();
         return withTimeout(new Promise((resolve) => {
@@ -124,6 +153,18 @@ export class SftpClient {
         await withTimeout(new Promise((resolve) => {
             sftp.mkdir(remotePath, { mode: 0o755 }, () => resolve());
         }), `Remote mkdir did not respond: ${remotePath}`);
+    }
+    async unlinkRemote(remotePath) {
+        const sftp = this.requireSftp();
+        await withTimeout(new Promise((resolve, reject) => {
+            sftp.unlink(remotePath, (err) => err ? reject(err) : resolve());
+        }), `Remote unlink did not respond: ${remotePath}`);
+    }
+    async rmdirRemote(remotePath) {
+        const sftp = this.requireSftp();
+        await withTimeout(new Promise((resolve, reject) => {
+            sftp.rmdir(remotePath, (err) => err ? reject(err) : resolve());
+        }), `Remote rmdir did not respond: ${remotePath}`);
     }
     requireSftp() {
         if (!this.sftp)

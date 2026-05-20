@@ -11,6 +11,9 @@ import { decryptServerCredentials } from '../shared/credentials.js';
 import { toFriendlyMessage } from '../shared/errors.js';
 import { Dashboard } from './screens/Dashboard.js';
 import { FileManager } from './screens/FileManager.js';
+import { Settings } from './screens/Settings.js';
+import { loadSettings, saveSetting } from '../config/settingsManager.js';
+import { checkForUpdate } from '../update/checker.js';
 function loadServers(vault) {
     const db = openVaultDatabase(vault);
     try {
@@ -32,7 +35,26 @@ export function App({ vault }) {
     const [selectedServer, setSelectedServer] = useState(null);
     const [status, setStatus] = useState(null);
     const [servers, setServers] = useState(() => loadServers(vault));
+    const [settings, setSettings] = useState(() => {
+        const db = openVaultDatabase(vault);
+        try {
+            return loadSettings(db);
+        }
+        finally {
+            db.close();
+        }
+    });
     const refreshServers = () => setServers(loadServers(vault));
+    // Auto update check on mount
+    useEffect(() => {
+        if (!settings.autoUpdateCheck)
+            return;
+        checkForUpdate(settings.updateCheckInterval).then((result) => {
+            if (result.updateAvailable) {
+                setStatus(`Update available: v${result.latestVersion} (current: v${result.currentVersion}). Run: sshp update`);
+            }
+        }).catch(() => { });
+    }, []);
     useEffect(() => {
         if (!status)
             return;
@@ -42,10 +64,25 @@ export function App({ vault }) {
     if (screen === 'files' && selectedServer) {
         return _jsx(FileManager, { server: selectedServer, vault: vault, onBack: () => setScreen('dashboard') });
     }
-    return _jsx(_Fragment, { children: _jsx(Dashboard, { servers: servers, status: status, onConnect: (server) => {
+    if (screen === 'settings') {
+        return _jsx(Settings, { settings: settings, onSave: (key, value) => {
+                const db = openVaultDatabase(vault);
+                try {
+                    saveSetting(db, key, value);
+                    setSettings(loadSettings(db));
+                }
+                finally {
+                    db.close();
+                }
+            }, onBack: () => setScreen('dashboard') });
+    }
+    return _jsx(_Fragment, { children: _jsx(Dashboard, { servers: servers, settings: settings, status: status, onSettings: () => setScreen('settings'), onConnect: (server) => {
                 setStatus(`Opening SSH: ${server.name}`);
                 exit({ action: 'connect', server });
-            }, onFiles: (server) => { setSelectedServer(server); setScreen('files'); }, onTest: async (server) => {
+            }, onFiles: (server) => { setSelectedServer(server); setScreen('files'); }, onForward: (server, forward) => {
+                setStatus(`Opening forward: ${server.name}`);
+                exit({ action: 'forward', server, forward });
+            }, onTest: async (server) => {
                 try {
                     const { testSshConnection } = await import('../ssh/client.js');
                     const result = await testSshConnection({ server, credentials: decryptServerCredentials(server, vault) });
